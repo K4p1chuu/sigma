@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Baza Danych Pojazdów - WSP MDT</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style> 
+        body { font-family: 'Inter', sans-serif; }
+        .sortable:hover { cursor: pointer; background-color: #374151; }
+        .modal-backdrop { display: none; }
+        .modal-backdrop.flex { display: flex; }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-200 flex h-screen">
+
+    <aside id="sidebar-container" class="w-64 bg-gray-800 p-4 flex flex-col min-h-screen flex-shrink-0"></aside>
+
+    <main class="flex-1 p-8 overflow-y-auto">
+        <h1 class="text-3xl font-bold text-white mb-6">Baza Danych Badań Technicznych</h1>
+        <div class="bg-gray-800 p-4 rounded-lg shadow-lg mb-6">
+            <div class="flex items-center space-x-4">
+                <input type="text" id="search-input" class="flex-grow bg-gray-700 border-gray-600 rounded-md shadow-sm py-2 px-3 text-white focus:outline-none focus:ring-blue-500 focus:border-blue-500" placeholder="Filtruj po numerze rejestracyjnym...">
+                <button id="refresh-button" class="bg-blue-600 hover:bg-blue-700 text-white font-bold p-2 rounded-lg flex items-center" title="Odśwież listę badań">
+                    <i data-lucide="refresh-cw" class="w-5 h-5"></i>
+                </button>
+            </div>
+        </div>
+
+        <div id="table-container" class="bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+             <div class="overflow-x-auto">
+                <table class="min-w-full text-sm text-left text-gray-300">
+                    <thead class="text-xs text-gray-400 uppercase bg-gray-700">
+                        <tr>
+                            <th class="px-6 py-3">Rejestracja</th>
+                            <th class="px-6 py-3">Pojazd</th>
+                            <th class="px-6 py-3">Właściciel</th>
+                            <th id="sort-date" class="px-6 py-3 sortable">Data Badania <i data-lucide="arrow-down-up" class="inline w-3 h-3 ml-1"></i></th>
+                            <th class="px-6 py-3">Wynik</th>
+                            <th class="px-6 py-3 text-center">Oryginał</th>
+                        </tr>
+                    </thead>
+                    <tbody id="inspections-table-body">
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        
+        <div id="message-container" class="text-center py-10"></div>
+    </main>
+    
+    <!-- Modal do podglądu wiadomości -->
+    <div id="message-modal" class="modal-backdrop fixed top-0 left-0 w-full h-full bg-black bg-opacity-70 z-50 justify-center items-center">
+        <div class="bg-gray-800 rounded-lg shadow-xl w-full max-w-lg p-6 relative">
+            <h3 class="text-lg font-medium leading-6 text-white mb-4">Oryginalna treść zgłoszenia</h3>
+            <pre id="modal-content" class="bg-gray-900 text-sm text-gray-300 p-4 rounded-md whitespace-pre-wrap max-h-96 overflow-y-auto"></pre>
+            <button id="modal-close-button" class="absolute top-4 right-4 text-gray-400 hover:text-white">
+                <i data-lucide="x" class="w-6 h-6"></i>
+            </button>
+        </div>
+    </div>
+    
+    <script src="shared.js"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', async () => {
+            const userData = await loadSidebarAndUserData('vehicle-database');
+            if(!userData) return;
+            
+            lucide.createIcons();
+
+            const token = localStorage.getItem('mdt-token');
+            const searchInput = document.getElementById('search-input');
+            const tableBody = document.getElementById('inspections-table-body');
+            const messageContainer = document.getElementById('message-container');
+            const refreshButton = document.getElementById('refresh-button');
+            const sortDateButton = document.getElementById('sort-date');
+            const messageModal = document.getElementById('message-modal');
+            const modalContent = document.getElementById('modal-content');
+            const modalCloseButton = document.getElementById('modal-close-button');
+
+            let allInspections = [];
+            let dateSortDirection = 'desc'; 
+
+            async function loadAndRenderInspections() {
+                messageContainer.innerHTML = '<p class="text-gray-500">Ładowanie danych...</p>';
+                tableBody.innerHTML = '';
+                try {
+                    const response = await fetch('/api/vehicles', { headers: { 'Authorization': token } });
+                    if (!response.ok) throw new Error('Błąd odpowiedzi serwera');
+                    const vehicles = await response.json();
+                    
+                    allInspections = [];
+                    vehicles.forEach(vehicle => {
+                        (vehicle.inspections || []).forEach(inspection => {
+                            allInspections.push({ ...inspection, ...vehicle });
+                        });
+                    });
+
+                    renderTable();
+                    return allInspections.length;
+
+                } catch (error) {
+                    console.error("Błąd ładowania pojazdów:", error);
+                    messageContainer.innerHTML = '<p class="text-red-500">Nie udało się załadować bazy badań.</p>';
+                    return 0;
+                }
+            }
+            
+            function renderTable() {
+                allInspections.sort((a, b) => {
+                    const dateA = new Date(a.inspectionDate);
+                    const dateB = new Date(b.inspectionDate);
+                    return dateSortDirection === 'asc' ? dateA - dateB : dateB - dateA;
+                });
+                
+                tableBody.innerHTML = ''; 
+                const filterText = searchInput.value.toLowerCase();
+
+                const filteredInspections = allInspections.filter(insp => 
+                    insp.plate && insp.plate.toLowerCase().includes(filterText)
+                );
+
+                if (filteredInspections.length === 0) {
+                     if (allInspections.length > 0) {
+                        messageContainer.innerHTML = '<p class="text-gray-500">Nie znaleziono pasujących wpisów.</p>';
+                    } else {
+                        messageContainer.innerHTML = '<p class="text-gray-500">Baza pojazdów jest pusta. Upewnij się, że bot odczytał nowe badania techniczne.</p>';
+                    }
+                } else {
+                    messageContainer.innerHTML = '';
+                }
+
+                filteredInspections.forEach((insp, index) => {
+                    const row = document.createElement('tr');
+                    row.className = 'hover:bg-gray-700';
+                    row.innerHTML = `
+                        <td class="px-6 py-4 font-mono text-blue-400">${insp.plate}</td>
+                        <td class="px-6 py-4">${insp.make || ''} ${insp.model || ''}</td>
+                        <td class="px-6 py-4">${insp.owner || 'Brak danych'}</td>
+                        <td class="px-6 py-4">${new Date(insp.inspectionDate).toLocaleString('pl-PL')}</td>
+                        <td class="px-6 py-4">
+                            <span class="px-2 py-1 font-semibold text-xs rounded-full ${insp.result === 'Pozytywny' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}">
+                                ${insp.result}
+                            </span>
+                        </td>
+                        <td class="px-6 py-4 text-center">
+                            <button class="view-message-btn" data-index="${index}" title="Pokaż oryginalną wiadomość">
+                                <i data-lucide="eye" class="w-5 h-5 text-gray-400 hover:text-white"></i>
+                            </button>
+                        </td>
+                    `;
+                    tableBody.appendChild(row);
+                });
+                lucide.createIcons();
+            }
+
+            tableBody.addEventListener('click', (e) => {
+                const viewButton = e.target.closest('.view-message-btn');
+                if (viewButton) {
+                    const index = viewButton.dataset.index;
+                    const filteredList = allInspections.filter(insp => insp.plate && insp.plate.toLowerCase().includes(searchInput.value.toLowerCase()));
+                    const inspection = filteredList[index];
+                    if (inspection && inspection.rawMessage) {
+                        modalContent.textContent = inspection.rawMessage;
+                        messageModal.classList.add('flex');
+                    }
+                }
+            });
+
+            modalCloseButton.addEventListener('click', () => {
+                messageModal.classList.remove('flex');
+            });
+
+            searchInput.addEventListener('input', renderTable);
+            sortDateButton.addEventListener('click', () => {
+                dateSortDirection = dateSortDirection === 'asc' ? 'desc' : 'asc';
+                renderTable();
+            });
+
+            refreshButton.addEventListener('click', async () => {
+                const icon = refreshButton.querySelector('i');
+                icon.classList.add('animate-spin');
+                const count = await loadAndRenderInspections();
+                icon.classList.remove('animate-spin');
+                messageContainer.innerHTML = `<p class="text-gray-400">Lista zaktualizowana. Załadowano ${count} wpisów.</p>`;
+            });
+
+            loadAndRenderInspections();
+        });
+    </script>
+</body>
+</html>
+
